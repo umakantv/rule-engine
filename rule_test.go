@@ -1037,3 +1037,243 @@ func containsSubstring(s, substr string) bool {
 	}
 	return false
 }
+
+func TestEvaluateWithFailure(t *testing.T) {
+	tests := []struct {
+		name               string
+		condition          string
+		attributes         map[string]interface{}
+		expectedResult     bool
+		expectedFailure    string
+		expectedPos        int
+		wantErr            bool
+	}{
+		{
+			name:            "simple comparison - passes",
+			condition:       "country == 'US'",
+			attributes:      map[string]interface{}{"country": "US"},
+			expectedResult:  true,
+			expectedFailure: "",
+			expectedPos:     -1,
+		},
+		{
+			name:            "simple comparison - fails",
+			condition:       "country == 'US'",
+			attributes:      map[string]interface{}{"country": "UK"},
+			expectedResult:  false,
+			expectedFailure: "country == 'US'",
+			expectedPos:     0,
+		},
+		{
+			name:            "numeric comparison - fails",
+			condition:       "age > 18",
+			attributes:      map[string]interface{}{"age": 15},
+			expectedResult:  false,
+			expectedFailure: "age > 18",
+			expectedPos:     0,
+		},
+		{
+			name:            "AND expression - first condition fails",
+			condition:       "country == 'US' AND age > 18",
+			attributes:      map[string]interface{}{"country": "UK", "age": 25},
+			expectedResult:  false,
+			expectedFailure: "country == 'US'",
+			expectedPos:     0,
+		},
+		{
+			name:            "AND expression - second condition fails",
+			condition:       "country == 'US' AND age > 18",
+			attributes:      map[string]interface{}{"country": "US", "age": 15},
+			expectedResult:  false,
+			expectedFailure: "age > 18",
+			expectedPos:     20,
+		},
+		{
+			name:            "AND expression - passes",
+			condition:       "country == 'US' AND age > 18",
+			attributes:      map[string]interface{}{"country": "US", "age": 25},
+			expectedResult:  true,
+			expectedFailure: "",
+			expectedPos:     -1,
+		},
+		{
+			name:            "OR expression - both fail, returns first",
+			condition:       "tier == 'premium' OR age > 65",
+			attributes:      map[string]interface{}{"tier": "basic", "age": 30},
+			expectedResult:  false,
+			expectedFailure: "tier == 'premium'",
+			expectedPos:     0,
+		},
+		{
+			name:            "OR expression - first passes",
+			condition:       "tier == 'premium' OR age > 65",
+			attributes:      map[string]interface{}{"tier": "premium", "age": 30},
+			expectedResult:  true,
+			expectedFailure: "",
+			expectedPos:     -1,
+		},
+		{
+			name:            "OR expression - second passes (first fails but not reported)",
+			condition:       "tier == 'premium' OR age > 65",
+			attributes:      map[string]interface{}{"tier": "basic", "age": 70},
+			expectedResult:  true,
+			expectedFailure: "",
+			expectedPos:     -1,
+		},
+		{
+			name:            "NOT expression - inner passes, NOT fails",
+			condition:       "NOT country == 'US'",
+			attributes:      map[string]interface{}{"country": "US"},
+			expectedResult:  false,
+			expectedFailure: "NOT (country == 'US')",
+			expectedPos:     0,
+		},
+		{
+			name:            "NOT expression - inner fails, NOT passes",
+			condition:       "NOT country == 'US'",
+			attributes:      map[string]interface{}{"country": "UK"},
+			expectedResult:  true,
+			expectedFailure: "",
+			expectedPos:     -1,
+		},
+		{
+			name:            "complex expression with parentheses - fails on first AND",
+			condition:       "(country == 'US' AND age > 18) OR tier == 'premium'",
+			attributes:      map[string]interface{}{"country": "UK", "age": 25, "tier": "basic"},
+			expectedResult:  false,
+			expectedFailure: "country == 'US'",
+			expectedPos:     1,
+		},
+		{
+			name:            "complex expression with parentheses - fails on second part of AND",
+			condition:       "(country == 'US' AND age > 18) OR tier == 'premium'",
+			attributes:      map[string]interface{}{"country": "US", "age": 15, "tier": "basic"},
+			expectedResult:  false,
+			expectedFailure: "age > 18",
+			expectedPos:     21,
+		},
+		{
+			name:            "complex expression - passes via OR",
+			condition:       "(country == 'US' AND age > 18) OR tier == 'premium'",
+			attributes:      map[string]interface{}{"country": "UK", "age": 30, "tier": "premium"},
+			expectedResult:  true,
+			expectedFailure: "",
+			expectedPos:     -1,
+		},
+		{
+			name:            "nested field - fails",
+			condition:       "savedTagsCounts.fitness > 10",
+			attributes:      map[string]interface{}{"savedTagsCounts": map[string]interface{}{"fitness": 5}},
+			expectedResult:  false,
+			expectedFailure: "savedTagsCounts.fitness > 10",
+			expectedPos:     0,
+		},
+		{
+			name:            "nested field - passes",
+			condition:       "savedTagsCounts.fitness > 3",
+			attributes:      map[string]interface{}{"savedTagsCounts": map[string]interface{}{"fitness": 5}},
+			expectedResult:  true,
+			expectedFailure: "",
+			expectedPos:     -1,
+		},
+		{
+			name:            "multiple conditions - first fails in AND chain",
+			condition:       "a == 1 AND b == 2 AND c == 3",
+			attributes:      map[string]interface{}{"a": 0, "b": 2, "c": 3},
+			expectedResult:  false,
+			expectedFailure: "a == 1",
+			expectedPos:     0,
+		},
+		{
+			name:            "multiple conditions - middle fails in AND chain",
+			condition:       "a == 1 AND b == 2 AND c == 3",
+			attributes:      map[string]interface{}{"a": 1, "b": 0, "c": 3},
+			expectedResult:  false,
+			expectedFailure: "b == 2",
+			expectedPos:     11,
+		},
+		{
+			name:            "inequality - fails",
+			condition:       "country != 'US'",
+			attributes:      map[string]interface{}{"country": "US"},
+			expectedResult:  false,
+			expectedFailure: "country != 'US'",
+			expectedPos:     0,
+		},
+		{
+			name:            "greater than or equal - fails",
+			condition:       "age >= 21",
+			attributes:      map[string]interface{}{"age": 18},
+			expectedResult:  false,
+			expectedFailure: "age >= 21",
+			expectedPos:     0,
+		},
+		{
+			name:            "less than or equal - fails",
+			condition:       "age <= 65",
+			attributes:      map[string]interface{}{"age": 70},
+			expectedResult:  false,
+			expectedFailure: "age <= 65",
+			expectedPos:     0,
+		},
+		{
+			name:            "regex match - fails",
+			condition:       `email ~= '^[a-z]+@example\.com$'`,
+			attributes:      map[string]interface{}{"email": "test@other.com"},
+			expectedResult:  false,
+			expectedFailure: `email ~= '^[a-z]+@example\.com$'`,
+			expectedPos:     0,
+		},
+		{
+			name:            "date comparison - fails",
+			condition:       "signupDate > '2020-01-01'",
+			attributes:      map[string]interface{}{"signupDate": "2019-01-01"},
+			expectedResult:  false,
+			expectedFailure: "signupDate > '2020-01-01'",
+			expectedPos:     0,
+		},
+		{
+			name:            "boolean comparison - fails",
+			condition:       "active == true",
+			attributes:      map[string]interface{}{"active": false},
+			expectedResult:  false,
+			expectedFailure: "active == true",
+			expectedPos:     0,
+		},
+		{
+			name:              "missing attribute - error",
+			condition:         "country == 'US'",
+			attributes:        map[string]interface{}{"age": 25},
+			wantErr:           true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			rule, err := ParseRule(tt.condition)
+			if err != nil {
+				t.Fatalf("failed to parse rule: %v", err)
+			}
+
+			result, err := rule.EvaluateWithFailure(tt.attributes)
+			if tt.wantErr {
+				if err == nil {
+					t.Error("expected error, got nil")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("evaluation error: %v", err)
+			}
+			if result.Result != tt.expectedResult {
+				t.Errorf("expected result %v, got %v", tt.expectedResult, result.Result)
+			}
+			if result.FailedCondition != tt.expectedFailure {
+				t.Errorf("expected failed condition %q, got %q", tt.expectedFailure, result.FailedCondition)
+			}
+			if result.FailurePosition != tt.expectedPos {
+				t.Errorf("expected failure position %d, got %d", tt.expectedPos, result.FailurePosition)
+			}
+		})
+	}
+}

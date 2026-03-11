@@ -334,6 +334,8 @@ type Node struct {
 	Left     *Node       // left operand
 	Right    *Node       // right operand
 	Operand  *Node       // for NOT operator
+	Pos      int         // position in the original condition string (start of the expression)
+	EndPos   int         // end position in the original condition string
 }
 
 // String returns a string representation of the node
@@ -416,6 +418,7 @@ func (p *Parser) parseOr() (*Node, error) {
 	}
 
 	for p.curr.Type == TokenOr {
+		opPos := p.curr.Pos
 		p.nextToken()
 		right, err := p.parseAnd()
 		if err != nil {
@@ -426,7 +429,10 @@ func (p *Parser) parseOr() (*Node, error) {
 			Operator: "OR",
 			Left:     left,
 			Right:    right,
+			Pos:      left.Pos,
+			EndPos:   right.EndPos,
 		}
+		_ = opPos // position tracking for the operator itself
 	}
 
 	return left, nil
@@ -450,6 +456,8 @@ func (p *Parser) parseAnd() (*Node, error) {
 			Operator: "AND",
 			Left:     left,
 			Right:    right,
+			Pos:      left.Pos,
+			EndPos:   right.EndPos,
 		}
 	}
 
@@ -459,6 +467,7 @@ func (p *Parser) parseAnd() (*Node, error) {
 // parseNot parses NOT expressions
 func (p *Parser) parseNot() (*Node, error) {
 	if p.curr.Type == TokenNot {
+		notPos := p.curr.Pos
 		p.nextToken()
 		operand, err := p.parseNot()
 		if err != nil {
@@ -468,6 +477,8 @@ func (p *Parser) parseNot() (*Node, error) {
 			Type:     NodeNot,
 			Operator: "NOT",
 			Operand:  operand,
+			Pos:      notPos,
+			EndPos:   operand.EndPos,
 		}, nil
 	}
 	return p.parsePrimary()
@@ -477,6 +488,7 @@ func (p *Parser) parseNot() (*Node, error) {
 func (p *Parser) parsePrimary() (*Node, error) {
 	switch p.curr.Type {
 	case TokenLeftParen:
+		startPos := p.curr.Pos
 		p.nextToken()
 		expr, err := p.parseExpression()
 		if err != nil {
@@ -485,7 +497,11 @@ func (p *Parser) parsePrimary() (*Node, error) {
 		if p.curr.Type != TokenRightParen {
 			return nil, fmt.Errorf("expected ')' at position %d", p.curr.Pos)
 		}
+		endPos := p.curr.Pos
 		p.nextToken()
+		// Update position for parenthesized expression
+		expr.Pos = startPos
+		expr.EndPos = endPos + 1
 		return expr, nil
 
 	case TokenIdentifier:
@@ -505,9 +521,12 @@ func (p *Parser) parseComparison() (*Node, error) {
 		return nil, fmt.Errorf("expected identifier, got %s at position %d", p.curr.Type, p.curr.Pos)
 	}
 
+	startPos := p.curr.Pos
 	left := &Node{
 		Type:  NodeIdentifier,
 		Field: p.curr.Value,
+		Pos:   startPos,
+		EndPos: startPos + len(p.curr.Value),
 	}
 	p.nextToken()
 
@@ -533,16 +552,21 @@ func (p *Parser) parseComparison() (*Node, error) {
 		Operator: operator,
 		Left:     left,
 		Right:    right,
+		Pos:      startPos,
+		EndPos:   right.EndPos,
 	}, nil
 }
 
 // parseLiteral parses a literal value (string, number, boolean)
 func (p *Parser) parseLiteral() (*Node, error) {
+	pos := p.curr.Pos
 	switch p.curr.Type {
 	case TokenString:
 		node := &Node{
-			Type:  NodeLiteral,
-			Value: p.curr.Value,
+			Type:   NodeLiteral,
+			Value:  p.curr.Value,
+			Pos:    pos,
+			EndPos: pos + len(p.curr.Value) + 2, // +2 for quotes
 		}
 		p.nextToken()
 		return node, nil
@@ -553,8 +577,10 @@ func (p *Parser) parseLiteral() (*Node, error) {
 			return nil, fmt.Errorf("invalid number format: %s at position %d", p.curr.Value, p.curr.Pos)
 		}
 		node := &Node{
-			Type:  NodeLiteral,
-			Value: value,
+			Type:   NodeLiteral,
+			Value:  value,
+			Pos:    pos,
+			EndPos: pos + len(p.curr.Value),
 		}
 		p.nextToken()
 		return node, nil
@@ -562,8 +588,10 @@ func (p *Parser) parseLiteral() (*Node, error) {
 	case TokenBoolean:
 		value := strings.ToUpper(p.curr.Value) == "TRUE"
 		node := &Node{
-			Type:  NodeLiteral,
-			Value: value,
+			Type:   NodeLiteral,
+			Value:  value,
+			Pos:    pos,
+			EndPos: pos + len(p.curr.Value),
 		}
 		p.nextToken()
 		return node, nil
@@ -571,8 +599,10 @@ func (p *Parser) parseLiteral() (*Node, error) {
 	case TokenIdentifier:
 		// Allow identifiers as values (for referencing other fields or constants)
 		node := &Node{
-			Type:  NodeLiteral,
-			Value: p.curr.Value,
+			Type:   NodeLiteral,
+			Value:  p.curr.Value,
+			Pos:    pos,
+			EndPos: pos + len(p.curr.Value),
 		}
 		p.nextToken()
 		return node, nil
