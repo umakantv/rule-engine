@@ -9,98 +9,228 @@ import (
 	"time"
 )
 
-// Evaluate evaluates the rule against the given attributes
-func (r *Rule) Evaluate(attributes map[string]interface{}) (bool, error) {
-	if r.AST == nil {
-		return false, errors.New("rule has no AST")
-	}
-	return evaluateNode(r.AST, attributes)
+// EvaluateResult contains the result of rule evaluation
+type EvaluateResult struct {
+	Result          bool   // The boolean result of the evaluation
+	FailedCondition string // The first condition that caused the rule to fail (empty if result is true)
+	FailurePosition int    // The starting position of the failing condition in the original string (-1 if no failure)
 }
 
-// evaluateNode recursively evaluates an AST node
-func evaluateNode(node *Node, attributes map[string]interface{}) (bool, error) {
+// Evaluate evaluates the rule against the given attributes and returns the result.
+func (r *Rule) Evaluate(attributes map[string]interface{}) (bool, error) {
+	result, err := r.EvaluateWithFailure(attributes)
+	if err != nil {
+		return false, err
+	}
+	return result.Result, nil
+}
+
+// EvaluateWithFailure evaluates the rule against the given attributes and returns
+// the result along with the first failing condition (if any).
+func (r *Rule) EvaluateWithFailure(attributes map[string]interface{}) (EvaluateResult, error) {
+	if r.AST == nil {
+		return EvaluateResult{}, errors.New("rule has no AST")
+	}
+
+	result, failedCondition, pos, err := evaluateNodeWithFailure(r.AST, attributes, r.Condition)
+	if err != nil {
+		return EvaluateResult{}, err
+	}
+
+	return EvaluateResult{
+		Result:          result,
+		FailedCondition: failedCondition,
+		FailurePosition: pos,
+	}, nil
+}
+
+// evaluateNodeWithFailure recursively evaluates an AST node and tracks the first failing condition
+func evaluateNodeWithFailure(node *Node, attributes map[string]interface{}, condition string) (bool, string, int, error) {
 	switch node.Type {
 	case NodeLiteral:
 		// This shouldn't be evaluated directly
-		return false, errors.New("cannot evaluate literal directly")
+		return false, "", -1, errors.New("cannot evaluate literal directly")
 
 	case NodeIdentifier:
 		// Get the value from attributes (supports nested paths with dot notation)
 		value, exists := getNestedValue(attributes, node.Field)
 		if !exists {
-			return false, fmt.Errorf("attribute '%s' not found", node.Field)
+			return false, "", -1, fmt.Errorf("attribute '%s' not found", node.Field)
 		}
 		// For standalone identifiers, treat as boolean
 		switch v := value.(type) {
 		case bool:
-			return v, nil
+			if !v {
+				return false, node.Field, node.Pos, nil
+			}
+			return true, "", -1, nil
 		default:
-			return false, fmt.Errorf("cannot evaluate non-boolean attribute '%s' as standalone expression", node.Field)
+			return false, "", -1, fmt.Errorf("cannot evaluate non-boolean attribute '%s' as standalone expression", node.Field)
 		}
 
 	case NodeComparison:
-		return evaluateComparison(node, attributes)
+		return evaluateComparisonWithFailure(node, attributes, condition)
 
 	case NodeLogical:
-		left, err := evaluateNode(node.Left, attributes)
-		if err != nil {
-			return false, err
-		}
-		right, err := evaluateNode(node.Right, attributes)
-		if err != nil {
-			return false, err
-		}
-		switch node.Operator {
-		case "AND":
-			return left && right, nil
-		case "OR":
-			return left || right, nil
-		default:
-			return false, fmt.Errorf("unknown logical operator: %s", node.Operator)
-		}
+		return evaluateLogicalWithFailure(node, attributes, condition)
 
 	case NodeNot:
-		operand, err := evaluateNode(node.Operand, attributes)
+		operand, _, _, err := evaluateNodeWithFailure(node.Operand, attributes, condition)
 		if err != nil {
-			return false, err
+			return false, "", -1, err
 		}
-		return !operand, nil
+		// For NOT, we invert the result but the failed condition changes
+		// If the inner condition was true, NOT makes it false, so that's the failing condition
+		// If the inner condition was false, NOT makes it true, so no failing condition
+		if operand {
+			// NOT true = false, so the NOT expression itself fails
+			// Build a descriptive failure message showing the actual condition that was negated
+			failedStr := extractConditionString(condition, node.Operand.Pos, node.Operand.EndPos)
+			return false, fmt.Sprintf("NOT (%s)", failedStr), node.Pos, nil
+		}
+		return true, "", -1, nil
 
 	default:
-		return false, fmt.Errorf("unknown node type: %d", node.Type)
+		return false, "", -1, fmt.Errorf("unknown node type: %d", node.Type)
 	}
 }
 
-// evaluateComparison evaluates a comparison node
-func evaluateComparison(node *Node, attributes map[string]interface{}) (bool, error) {
+// extractConditionString extracts a substring from the condition based on position
+func extractConditionString(condition string, start, end int) string {
+	if start < 0 || end > len(condition) || start >= end {
+		return ""
+	}
+	return strings.TrimSpace(condition[start:end])
+}
+
+// evaluateLogicalWithFailure evaluates logical (AND/OR) expressions
+func evaluateLogicalWithFailure(node *Node, attributes map[string]interface{}, condition string) (bool, string, int, error) {
+	switch node.Operator {
+	case "AND":
+		// For AND, we need to find the first false condition
+		leftResult, leftFailed, leftPos, err := evaluateNodeWithFailure(node.Left, attributes, condition)
+		if err != nil {
+			return false, "", -1, err
+		}
+		if !leftResult {
+			// Left side failed, return its failing condition
+			return false, leftFailed, leftPos, nil
+		}
+		// Left side passed, check right side
+		rightResult, rightFailed, rightPos, err := evaluateNodeWithFailure(node.Right, attributes, condition)
+		if err != nil {
+			return false, "", -1, err
+		}
+		if !rightResult {
+			// Right side failed
+			return false, rightFailed, rightPos, nil
+		}
+		// Both passed
+		return true, "", -1, nil
+
+	case "OR":
+		// For OR, we need both sides to be false to report a failure
+		leftResult, leftFailed, leftPos, err := evaluateNodeWithFailure(node.Left, attributes, condition)
+		if err != nil {
+			return false, "", -1, err
+		}
+		if leftResult {
+			// Left side passed, OR is satisfied
+			return true, "", -1, nil
+		}
+		// Left side failed, try right side
+		rightResult, _, _, err := evaluateNodeWithFailure(node.Right, attributes, condition)
+		if err != nil {
+			return false, "", -1, err
+		}
+		if rightResult {
+			// Right side passed, OR is satisfied
+			return true, "", -1, nil
+		}
+		// Both sides failed, return the first failing condition (left)
+		return false, leftFailed, leftPos, nil
+
+	default:
+		return false, "", -1, fmt.Errorf("unknown logical operator: %s", node.Operator)
+	}
+}
+
+// evaluateComparisonWithFailure evaluates a comparison node and returns the failing condition
+func evaluateComparisonWithFailure(node *Node, attributes map[string]interface{}, condition string) (bool, string, int, error) {
 	// Get the field value
 	if node.Left.Type != NodeIdentifier {
-		return false, errors.New("left side of comparison must be an identifier")
+		return false, "", -1, errors.New("left side of comparison must be an identifier")
 	}
 
 	fieldName := node.Left.Field
 	fieldValue, exists := getNestedValue(attributes, fieldName)
 	if !exists {
-		return false, fmt.Errorf("attribute '%s' not found", fieldName)
+		return false, "", -1, fmt.Errorf("attribute '%s' not found", fieldName)
 	}
 
 	// Get the comparison value
 	compareValue := node.Right.Value
 
+	// Build the condition string for failure reporting
+	conditionStr := fmt.Sprintf("%s %s %v", fieldName, node.Operator, formatValue(compareValue))
+
 	// Perform the comparison based on types
+	var result bool
+	var err error
+
 	switch node.Operator {
 	case "==":
-		return compareEqual(fieldValue, compareValue)
+		result, err = compareEqual(fieldValue, compareValue)
 	case "!=":
-		result, err := compareEqual(fieldValue, compareValue)
-		return !result, err
+		result, err = compareEqual(fieldValue, compareValue)
+		result = !result
 	case ">", ">=", "<", "<=":
-		return compareNumericOrDate(fieldValue, compareValue, node.Operator)
+		result, err = compareNumericOrDate(fieldValue, compareValue, node.Operator)
 	case "~=":
-		return matchRegex(fieldValue, compareValue)
+		result, err = matchRegex(fieldValue, compareValue)
 	default:
-		return false, fmt.Errorf("unknown comparison operator: %s", node.Operator)
+		return false, "", -1, fmt.Errorf("unknown comparison operator: %s", node.Operator)
 	}
+
+	if err != nil {
+		return false, "", -1, err
+	}
+
+	if !result {
+		return false, conditionStr, node.Pos, nil
+	}
+
+	return true, "", -1, nil
+}
+
+// formatValue formats a value for display in the failed condition string
+func formatValue(value interface{}) string {
+	switch v := value.(type) {
+	case string:
+		return fmt.Sprintf("'%s'", v)
+	case float64:
+		// Check if it's a whole number
+		if v == float64(int64(v)) {
+			return fmt.Sprintf("%d", int64(v))
+		}
+		return fmt.Sprintf("%v", v)
+	case bool:
+		return fmt.Sprintf("%v", v)
+	default:
+		return fmt.Sprintf("%v", v)
+	}
+}
+
+// evaluateNode recursively evaluates an AST node (kept for backward compatibility)
+func evaluateNode(node *Node, attributes map[string]interface{}) (bool, error) {
+	result, _, _, err := evaluateNodeWithFailure(node, attributes, "")
+	return result, err
+}
+
+// evaluateComparison evaluates a comparison node (kept for backward compatibility)
+func evaluateComparison(node *Node, attributes map[string]interface{}) (bool, error) {
+	result, _, _, err := evaluateComparisonWithFailure(node, attributes, "")
+	return result, err
 }
 
 // compareEqual compares two values for equality
