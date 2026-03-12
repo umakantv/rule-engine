@@ -17,7 +17,7 @@ A powerful and flexible rule engine for Go that evaluates conditions against ent
 ## Installation
 
 ```bash
-go get go-queue
+go get github.com/umakantv/rule-engine
 ```
 
 ## Quick Start
@@ -27,7 +27,7 @@ package main
 
 import (
     "fmt"
-    "go-queue"
+    "rule-engine"
 )
 
 func main() {
